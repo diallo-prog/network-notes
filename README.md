@@ -9,7 +9,8 @@ A difference between an https and http
 
 Notes and captures from learning how the network works, weeks 1-2 of my networking plan. I tested everything on my own computer and my own network.
 
-## The 5 steps of opening a website
+## The 5 steps of opening a website<img width="707" height="343" alt="site_checker" src="https://github.com/user-attachments/assets/58c4fe8c-cd13-4dc4-aac5-f08a17958891" />
+
 
 | Step | What happens | Protocol / port |
 | --- | --- | --- |
@@ -92,3 +93,49 @@ I sent a fake password to the same site over both. Over HTTP, Wireshark found `G
 3. What does the TCP handshake look like?
 4. What could someone on the same Wi-Fi read over HTTP, and over HTTPS?
 5. Why are `* * *` in tracert not proof of a broken road?
+
+
+<img width="707" height="343" alt="site_checker" src="https://github.com/user-attachments/assets/f3f6a5af-e5c1-4483-a1bc-c755801b05d0" />
+<img width="1387" height="432" alt="preview" src="https://github.com/user-attachments/assets/55d8873e-5416-43fd-8554-0fb85d3c49b1" />
+
+# python-chat
+
+Small Python programs I wrote while learning how networking works.
+I wrote and ran everything myself on Windows, and checked it with Wireshark.
+
+## 1. Chat (server.py and client.py)
+
+A chat where many people can talk at the same time.
+
+- **Server:** waits for people to connect. Each person gets their own thread, so nobody has to wait for someone else to leave.
+  My first server had no threads. Client B had to wait until client A left, because the server could only do one thing at a time.
+- **Lock:** makes sure two threads don't write to the shared list of clients at the same moment, so the messages don't get mixed up.
+- **Client:** has a separate listener thread. The thread is not for typing. It frees the client to receive messages while I am also typing.
+- **while loop and break:** the while loop keeps the conversation going. Without it, there would be one message and then it ends. "quit" uses break to leave.
+
+How to run: open 2 or 3 terminals. Run `python server.py` in the first, then `python client.py` in the others.
+
+## 2. Site checker (site_checker.py)
+
+Visits some websites 5 times, measures how long they take, and saves everything to `results.csv`.
+
+It tells me which step failed:
+
+| What happened | Message | Step |
+|---|---|---|
+| Fake site `notarealwebsite123456.com` | name not found | DNS |
+| `127.0.0.1:5999` (nothing there) | connection refused | handshake |
+| Server answers with an error code | HTTP error | HTTP |
+| No answer in 5 seconds | too slow | timeout |
+
+### My results
+- http://www.baidu.com: 200 in about 97 to 176 ms. Median: ___ ms
+- https://www.baidu.com: 200 in about 150 to 334 ms. Median: ___ ms
+- HTTPS was faster than HTTP, because of  the extra TLS handshake
+
+### Something I learned
+Sometimes the same site gave a different result in different tools (a 502 error, or "getaddrinfo failed"). The cause was my VPN/proxy. Python's urllib uses the system proxy settings, but curl normally doesn't.
+So a failing check doesn't always mean the site is down. It can be my own setup.
+
+## What I want to do next
+Router and switch lab, then cloud networking.
