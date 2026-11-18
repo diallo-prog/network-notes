@@ -139,3 +139,136 @@ So a failing check doesn't always mean the site is down. It can be my own setup.
 
 ## What I want to do next
 Router and switch lab, then cloud networking.
+
+# AWS VPC Lab: A Public Web Server and a Hidden Server
+
+I built a small cloud network on AWS with two servers: a **web server** that anyone on the internet can reach, and a **hidden server** that only the web server can reach. I controlled who can talk to whom, tested it, and fixed what broke along the way.
+
+> Everything here was built in my own AWS account (region: Sydney, `ap-southeast-2`), with free-tier servers, and deleted at the end.
+
+## 1. Goal
+
+I wanted to understand cloud networking by building it, not only reading about it: private addresses, subnets, routes, the internet gateway, and security groups. I had already practised the same ideas on my own computer (Packet Tracer and a Linux network lab), so this lab was the "real cloud" version.
+
+## 2. Design
+<img width="954" height="272" alt="vpc_R_map" src="https://github.com/user-attachments/assets/0ec0a2a0-ef1b-452b-a02d-90395d767e98" />
+
+
+| Part | What I made | Why |
+|---|---|---|
+| VPC | `10.1.0.0/16` | My own private network inside AWS |
+| Public subnet | `10.1.1.0/24` | Connected to the internet through the internet gateway |
+| Second subnet | `10.1.2.0/24` | Planned as the private subnet (see section 5: it was created but not used) |
+| Internet gateway + route table | `0.0.0.0/0` points to the gateway | This route is what makes a subnet "public" |
+| Web server (EC2) | public IP, serves a page on port 80 | The part the internet can see |
+| Hidden server (EC2) | no public IP, serves a file on port 9000 | The part that must stay hidden |
+
+Both servers run a tiny Python web server (`python3 -m http.server`), started by a user-data script at first boot.
+
+
+<img width="776" height="398" alt="image" src="https://github.com/user-attachments/assets/672928d8-a74d-46f0-9553-d5f915dab376" />
+
+
+<img width="765" height="442" alt="image" src="https://github.com/user-attachments/assets/60fda1b7-4c2a-4886-b419-7cbc4f5a5d51" />
+
+
+<img width="752" height="437" alt="web_server" src="https://github.com/user-attachments/assets/52b4487c-2570-440a-87f2-fd5ac0426923" />
+<img width="743" height="404" alt="hidden_server" src="https://github.com/user-attachments/assets/114e15b0-e6f8-4d95-8c9d-711a83502872" />
+
+## 3. The guards (security groups)
+
+A security group is a guard attached to a server. **Inbound** says who may get in, **outbound** says where the server may go.
+
+
+<img width="764" height="368" alt="seurity_web" src="https://github.com/user-attachments/assets/70de53bb-4450-4cbe-8ed0-36e6be7fb21d" />
+
+
+<img width="772" height="376" alt="security_hidden" src="https://github.com/user-attachments/assets/544cb948-7dba-4a10-ba4a-afa5364e3113" />
+
+
+| Guard | Inbound rule | Source | Why |
+|---|---|---|---|
+| web-sg | HTTP, port 80 | anywhere (`0.0.0.0/0`) | So anyone can open the website |
+| web-sg | SSH, port 22 | my IP | So only I can log in |
+| hidden-sg | TCP, port 9000 | `web-sg` (the group) | Only the web server may reach the hidden service |
+| hidden-sg | SSH, port 22 | `web-sg` (the group) | So I can reach hidden by jumping through the web server |
+| hidden-sg | ICMP | `web-sg` (the group) | So I can test with ping from the web server |
+
+**Why a group as the source and not an IP?** The web server's IP can change (it did, after a stop/start). The group stays the same, so the rule keeps working and means "anything that belongs to the web server group".
+
+Security groups are also **stateful**: if a connection is allowed in, the reply is allowed back automatically.
+
+## 4. How I tested it
+
+| # | Test | Result | Screenshot |
+|---|---|---|---|
+| 1 | Open `http://<web public IP>` in the browser | The page loads | <img width="710" alt="web_server_access" src="https://github.com/user-attachments/assets/f76ace63-56cd-46e7-a702-a849bfe85464" /> |
+| 2 | `ss -ltn` on the web server | Listening on ports 22 and 80 | <img width="822" alt="ltn_web" src="https://github.com/user-attachments/assets/30b72dfa-ad76-4979-a467-aee7957da1ab" /> |
+| 3 | `ss -ltn` on the hidden server | Listening on ports 22 and 9000 | <img width="859" alt="ltn_hidden" src="https://github.com/user-attachments/assets/18dba57b-1bbb-4791-ba36-576d3d38371d" /> |
+| 4 | From the web server: `curl http://10.1.1.27:9000/secret.txt` | Returns the hidden file's text | <img width="552" alt="curl_hidden" src="https://github.com/user-attachments/assets/b82916a6-af20-403e-b79d-da35bef1c04c" /> |
+| 5 | SSH to hidden through the web server (jump host) | I land on the hidden server's prompt | <img width="863" alt="ssh_jump" src="https://github.com/user-attachments/assets/70428a67-f50b-495c-aba5-0fade1bbc389" /> |
+
+
+The jump command, run from my laptop, keeps my key file on my laptop and never copies it to a server:
+
+```
+ssh -i mylab_key.pem -o ProxyCommand="ssh -i mylab_key.pem -W %h:%p ec2-user@<web public IP>" ec2-user@<hidden private IP>
+```
+
+I also confirmed the reverse: the hidden server's address (`10.1.1.27`) is **private**, so my laptop has no route to it and a direct SSH from my laptop cannot work.
+
+## 5. What went wrong and what I learned
+
+**1. Timeout vs refused.**
+- *Symptom:* the hidden server's port 9000 did not answer one morning, and later the web page timed out.
+- *Cause:* a **timeout** means silence (something blocks or there is no road), while **refused** means the connection reached the server but no program was listening. The hidden server was refused because its program was not running.
+- *Lesson:* the error type tells you which half is broken. `ss -ltn` on the server shows whether a program is really listening.
+
+**2. Programs died after stop/start.**
+- *Symptom:* after stopping the servers at night, the web page and port 9000 stopped working.
+- *Cause:* my user-data script runs **only at first boot**, and the programs were started in the background, so they did not come back. The public IP also changed after the restart.
+- *Fix:* I started the programs again by hand over SSH (`sudo nohup python3 -m http.server 80 ... &` for port 80, and the same without `sudo` for port 9000).
+- *Lesson:* a program started by hand does not survive a reboot. A proper fix is a systemd service or a cron `@reboot` entry (see next steps).
+
+**3. "My IP" and the VPN.**
+- *Symptom:* SSH sometimes timed out even though the rule looked right.
+- *Cause:* the "My IP" rule stores the address AWS sees. With a VPN, that is the VPN's exit address, and it can differ between my browser and my terminal.
+- *Lesson:* create the rule and connect under the same network conditions, and re-select "My IP" when the address changes.
+
+**4. SSH jump host and the key.**
+- *Symptom:* `ssh -J` returned "Permission denied (publickey)".
+- *Cause:* `-i` only applies to the final machine, so the first hop (the web server) got no key.
+- *Fix:* use `ProxyCommand` so the key is used on both hops.
+
+**5. Direct SSH to a private address.**
+- *Symptom:* I ran `ssh` straight to the hidden server's private address (`10.1.1.27`) from my laptop. I expected a timeout, but SSH printed "REMOTE HOST IDENTIFICATION HAS CHANGED".
+- *Cause:* a private address only exists inside its own network. My local network has a different machine using the same address, and its host key did not match the one I had saved from the real hidden server.
+- *What I did:* I did not connect or override the warning, because it was someone else's device.
+- *Lesson:* a `10.x.x.x` address means nothing outside its network, so the hidden server is only reachable through the web server. SSH's fingerprint check also protected me from connecting to the wrong machine.
+
+**6. My subnet mistake.**
+- *What happened:* I planned a public subnet (`10.1.1.0`) and a private subnet (`10.1.2.0`), but both servers ended up in `10.1.1.0`, because the subnet field defaulted to the first one when I launched the hidden server. I noticed it while writing up the lab.
+- *Why it still held:* the hidden server is protected by having **no public IP** and by a security group that only accepts the web server's group. A subnet does not decide who can talk to a server, the security group does.
+- *What I would do next time:* put hidden in a real private subnet with no route to the internet gateway. That adds a second layer, so even a mistake in a security group rule would not expose it.
+
+## 6. Security ideas I practised
+
+- **Least privilege:** open only the ports that are needed, and only to who needs them.
+- **Hidden server:** no public IP, and a guard that accepts only the web server's group.
+- **SSH limited to my IP**, not open to the whole internet.
+- **Never copy the private key to a server.** Use a jump through the web server instead.
+- **Defense in depth:** guards and addresses protect together, and a private subnet would add one more layer.
+
+## 7. Cost and cleanup
+
+- Free-tier-eligible instance size, and a budget alert in the billing settings.
+- Cleanup: terminated both instances, deleted the security groups, deleted the VPC, then checked for leftover Elastic IPs and Volumes.
+
+
+## 8. Next steps
+
+- Make the web programs restart by themselves after a reboot (systemd or cron `@reboot`).
+- Move the hidden server to a real private subnet.
+- Try Session Manager instead of open SSH.
+- Add HTTPS (certificate and a domain name).
+
