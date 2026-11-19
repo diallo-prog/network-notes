@@ -272,3 +272,116 @@ I also confirmed the reverse: the hidden server's address (`10.1.1.27`) is **pri
 - Try Session Manager instead of open SSH.
 - Add HTTPS (certificate and a domain name).
 
+
+# systemd Lab: Making a Web Server Survive a Reboot
+
+In my AWS VPC lab, the web program died every time I stopped and started the server, because I had started it by hand. In this lab I fixed that with **systemd**, the service manager on Linux, and proved that the page comes back by itself after a restart.
+
+> Built in my own AWS account (region: Sydney), on one free-tier server, and terminated at the end.
+
+## 1. Goal
+
+A tiny web page should:
+1. start by itself when the server boots, and
+2. restart by itself if the program crashes.
+
+## 2. Setup
+
+One EC2 instance (Amazon Linux, free-tier size) in the default VPC, with a security group that allows:
+
+| Rule | Port | Source | Why |
+|---|---|---|---|
+| HTTP | 80 | anywhere (`0.0.0.0/0`) | so the page can be opened |
+| SSH | 22 | my address only | so only I can log in |
+
+A web folder with one page, served by Python's built-in web server:
+
+```
+mkdir -p ~/web
+echo "hello from systemd lab" > ~/web/index.html
+cd ~/web
+sudo python3 -m http.server 80
+```
+
+Started this way, the program runs **in the foreground by hand**, and it stops when the server restarts.
+
+
+## 3. The service file
+
+systemd reads small "notes" (service files) from `/etc/systemd/system/`. Mine is `webtest.service`:
+
+```
+[Unit]
+Description=My test web page
+After=network.target
+
+[Service]
+WorkingDirectory=/home/ec2-user/web
+ExecStart=/usr/bin/python3 -m http.server 80
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+| Section | Line | Meaning |
+|---|---|---|
+| `[Unit]` | `After=network.target` | start only after the network is ready |
+| `[Service]` | `WorkingDirectory=` | the folder to serve (replaces my `cd`) |
+| `[Service]` | `ExecStart=` | the exact command, with the **full path** to Python (no `sudo` needed: services run as root) |
+| `[Service]` | `Restart=always` | if it dies, start it again |
+| `[Install]` | `WantedBy=multi-user.target` | include it in a normal boot (this makes `enable` work) |
+
+
+<img width="532" height="154" alt="lab2_note" src="https://github.com/user-attachments/assets/4e672db7-21f9-404a-ad6d-7e9d5be71f0c" />
+
+Then I told systemd to load it, enable it at boot, and start it now:
+
+```
+sudo systemctl daemon-reload
+sudo systemctl enable --now webtest
+systemctl status webtest
+```
+
+
+<img width="837" height="201" alt="lab2_systemc" src="https://github.com/user-attachments/assets/3026411f-acfa-4be4-b7b2-faddad9d1b80" />
+
+## 4. How I tested it
+
+| # | Test | What I expected | Result |
+|---|---|---|---|
+| 1 | Kill the program: `sudo kill <Main PID>` | systemd starts it again with a new process number | Service stayed `active (running)` with a different `Main PID` |
+| 2 | Stop and start the instance from the console | The page returns by itself | The page was back with no command from me (at the **new** public IP) |
+
+<img width="821" height="170" alt="lab2_kill_try" src="https://github.com/user-attachments/assets/99f9a369-ab34-4579-8310-21adaa436e61" />
+
+
+## 5. What went wrong and what I learned
+
+**1. A program started by hand does not survive a reboot.**
+Before this lab, my web program and my hidden server's program died at each stop/start, and I got "connection refused" (the server was reachable but nobody was listening). A service with `enable` fixes that.
+
+**2. The public IP still changes.**
+systemd keeps the program alive, but AWS gives the server a new public IP after each stop/start. A fixed address needs an Elastic IP or a domain name, which is a different tool.
+
+**3. Why the guard and the program are separate checks.**
+`ss -ltn` inside the server shows whether a program is listening. A connection from outside also needs the road and the security group to allow it. When something fails, checking both halves tells me which one is broken.
+
+**4. "My IP" and SSH.**
+The address AWS fills in for "My IP" comes from my browser, but my SSH leaves by a different path (the VPN affects them differently). The server can tell me the truth: `echo $SSH_CLIENT` prints the address it sees. On a changing network, a small range works better than a single address.
+
+**5. A mid-handshake SSH error is a different problem from a blocked one.**
+`ssh_dispatch_run_fatal ... Connection timed out` means the connection started and then died, so it was an unstable network line and not the security group. A blocked guard just stays silent from the start. I used the browser-based Connect as a workaround.
+
+## 6. Security notes
+
+- Opened SSH to the world only briefly for testing, then restricted it again.
+- Services run as root by default; for something real I would run it as a normal user and use a port above 1024 behind a proxy.
+- Terminated the server and deleted the security group when finished.
+
+## 7. Next steps
+
+- Describe the whole lab in code with **Terraform**, so I can create and destroy it with one command.
+- Put the VPC lab and this one together: both servers managed by systemd.
+- Add HTTPS.
+
